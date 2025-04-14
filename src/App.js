@@ -18,6 +18,9 @@ function App() {
   const [showForm, setShowForm] = useState(false);
   const [facts, setFacts] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [sortBy, setSortBy] = useState('votesInteresting');
+  const [editFact, setEditFact] = useState(null);
 
   useEffect(() => {
     async function getFacts() {
@@ -30,17 +33,61 @@ function App() {
     getFacts();
   }, []);
 
+  const filteredFacts = facts.filter(
+    (fact) =>
+      (currentCategory === 'all' || fact.category === currentCategory) &&
+      fact.text.toLowerCase().includes(searchQuery.toLowerCase())
+  );
+
+  const sortedFacts = [...filteredFacts].sort((a, b) => b[sortBy] - a[sortBy]);
+
+  async function handleDelete(factId) {
+    if (window.confirm('Are you sure you want to delete this fact?')) {
+      setIsLoading(true);
+      const { error } = await supabase.from('facts').delete().eq('id', factId);
+      if (error) {
+        alert('There was a problem deleting the fact.');
+      } else {
+        setFacts(facts.filter((fact) => fact.id !== factId));
+      }
+      setIsLoading(false);
+    }
+  }
+
+  async function handleUpdate(fact) {
+    setEditFact(fact);
+    setShowForm(true);
+  }
+
   return (
     <>
       <Header showForm={showForm} setShowForm={setShowForm} />
-      {showForm && <NewFactForm setFacts={setFacts} setShowForm={setShowForm} />}
+      {showForm && (
+        <NewFactForm
+          setFacts={setFacts}
+          setShowForm={setShowForm}
+          editFact={editFact}
+          setEditFact={setEditFact}
+        />
+      )}
       <main className="main">
         <CategoryFilters setCurrentCategory={setCurrentCategory} />
-        {isLoading ? (
-          <Loader />
-        ) : (
-          <FactList currentCategory={currentCategory} facts={facts} setFacts={setFacts} />
-        )}
+        <section>
+          <div className="filters-container">
+            <SearchBar searchQuery={searchQuery} setSearchQuery={setSearchQuery} />
+            <SortByDropdown setSortBy={setSortBy} />
+          </div>
+          {isLoading ? (
+            <Loader />
+          ) : (
+            <FactList
+              facts={sortedFacts}
+              setFacts={setFacts}
+              handleDelete={handleDelete}
+              handleUpdate={handleUpdate}
+            />
+          )}
+        </section>
       </main>
     </>
   );
@@ -74,42 +121,53 @@ function isValidHttpUrl(string) {
   return url.protocol === 'http:' || url.protocol === 'https:';
 }
 
-function NewFactForm({ setFacts, setShowForm }) {
-  const [text, setText] = useState('');
-  const [source, setSource] = useState('');
-  const [category, setCategory] = useState('');
+function NewFactForm({ setFacts, setShowForm, editFact, setEditFact }) {
+  const [text, setText] = useState(editFact ? editFact.text : '');
+  const [source, setSource] = useState(editFact ? editFact.source : '');
+  const [category, setCategory] = useState(editFact ? editFact.category : '');
   const [isUploading, setIsUploading] = useState(false);
   const textLength = text.length;
 
   async function handleSubmit(e) {
     e.preventDefault();
     if (text && isValidHttpUrl(source) && category && textLength <= 200) {
-      console.log('Form is valid, submitting fact...');
       setIsUploading(true);
       try {
-        const { data, error } = await supabase
-          .from('facts')
-          .insert([{ text, source, category, votesInteresting: 0, votesMindblowing: 0, votesFalse: 0 }])
-          .select();
-        setIsUploading(false);
-
-        if (error) {
-          console.error("Error inserting fact:", error);
-          alert("There was an error adding the fact.");
+        if (editFact) {
+          const { data, error } = await supabase
+            .from('facts')
+            .update({ text, source, category })
+            .eq('id', editFact.id)
+            .select();
+          if (!error) {
+            setFacts((facts) =>
+              facts.map((f) => (f.id === editFact.id ? data[0] : f))
+            );
+            setEditFact(null);
+          } else {
+            alert('There was an error updating the fact.');
+          }
         } else {
-          console.log("Fact added successfully:", data);
-          setFacts((facts) => [data[0], ...facts]);
-          setText('');
-          setSource('');
-          setCategory('');
-          setShowForm(false);
+          const { data, error } = await supabase
+            .from('facts')
+            .insert([{ text, source, category, votesInteresting: 0, votesMindblowing: 0, votesFalse: 0 }])
+            .select();
+          if (!error) {
+            setFacts((facts) => [data[0], ...facts]);
+          } else {
+            alert('There was an error adding the fact.');
+          }
         }
-      } catch (error) {
-        console.error('Error submitting form:', error);
         setIsUploading(false);
+        setShowForm(false);
+        setText('');
+        setSource('');
+        setCategory('');
+      } catch (error) {
+        setIsUploading(false);
+        alert('An unexpected error occurred.');
       }
     } else {
-      console.log('Form validation failed');
       alert('Please make sure all fields are filled correctly.');
     }
   }
@@ -121,6 +179,7 @@ function NewFactForm({ setFacts, setShowForm }) {
         placeholder="Share a fact with the world..."
         value={text}
         onChange={(e) => setText(e.target.value)}
+        disabled={isUploading}
       />
       <span>{200 - textLength}</span>
       <input
@@ -128,8 +187,13 @@ function NewFactForm({ setFacts, setShowForm }) {
         placeholder="Trustworthy source..."
         value={source}
         onChange={(e) => setSource(e.target.value)}
+        disabled={isUploading}
       />
-      <select value={category} onChange={(e) => setCategory(e.target.value)}>
+      <select
+        value={category}
+        onChange={(e) => setCategory(e.target.value)}
+        disabled={isUploading}
+      >
         <option value="">Choose category:</option>
         {CATEGORIES.map((cat) => (
           <option key={cat.name} value={cat.name}>
@@ -138,7 +202,7 @@ function NewFactForm({ setFacts, setShowForm }) {
         ))}
       </select>
       <button className="btn btn-large" disabled={isUploading}>
-        {isUploading ? 'Posting...' : 'Post'}
+        {isUploading ? 'Posting...' : editFact ? 'Update' : 'Post'}
       </button>
     </form>
   );
@@ -169,28 +233,56 @@ function CategoryFilters({ setCurrentCategory }) {
   );
 }
 
-function FactList({ currentCategory, facts, setFacts }) {
-  const filteredFacts =
-    currentCategory === 'all'
-      ? facts
-      : facts.filter((fact) => fact.category === currentCategory);
+function SearchBar({ searchQuery, setSearchQuery }) {
+  return (
+    <div className="search-bar">
+      <input
+        type="text"
+        placeholder="Search for facts..."
+        value={searchQuery}
+        onChange={(e) => setSearchQuery(e.target.value)}
+      />
+    </div>
+  );
+}
 
-  if (filteredFacts.length === 0)
-    return <p className="message">No facts for this category yet! Create the first one.</p>;
+function SortByDropdown({ setSortBy }) {
+  return (
+    <div className="sort-dropdown">
+      <select onChange={(e) => setSortBy(e.target.value)}>
+        <option value="votesInteresting">Sort by Interesting</option>
+        <option value="votesMindblowing">Sort by Mindblowing</option>
+        <option value="votesFalse">Sort by False</option>
+      </select>
+    </div>
+  );
+}
+
+function FactList({ facts, setFacts, handleDelete, handleUpdate }) {
+  if (facts.length === 0)
+    return (
+      <p className="message">No facts available. Be the first to add one!</p>
+    );
 
   return (
     <section>
       <ul className="facts-list">
-        {filteredFacts.map((fact) => (
-          <Fact key={fact.id} fact={fact} setFacts={setFacts} />
+        {facts.map((fact) => (
+          <Fact
+            key={fact.id}
+            fact={fact}
+            setFacts={setFacts}
+            handleDelete={handleDelete}
+            handleUpdate={handleUpdate}
+          />
         ))}
       </ul>
-      <p>There are {filteredFacts.length} facts in the database. Add your own!</p>
+      <p className="fact-count">There are {facts.length} facts in the database. Add your own!</p>
     </section>
   );
 }
 
-function Fact({ fact, setFacts }) {
+function Fact({ fact, setFacts, handleDelete, handleUpdate }) {
   const [isUpdating, setIsUpdating] = useState(false);
   const isDisputed = fact.votesInteresting + fact.votesMindblowing < fact.votesFalse;
 
@@ -204,37 +296,44 @@ function Fact({ fact, setFacts }) {
     setIsUpdating(false);
 
     if (!error && updatedFact) {
-      setFacts((facts) => facts.map((f) => (f.id === fact.id ? updatedFact[0] : f)));
+      setFacts((facts) =>
+        facts.map((f) => (f.id === fact.id ? updatedFact[0] : f))
+      );
     }
   }
 
   return (
-    <li className="fact">
-      <p>
-        {isDisputed && <span className="disputed">[⛔ DISPUTED]</span>}
-        {fact.text}
-        <a className="source" href={fact.source} target="_blank" rel="noreferrer">
-          (Source)
-        </a>
-      </p>
-      <span
-        className="tag"
-        style={{
-          backgroundColor: CATEGORIES.find((cat) => cat.name === fact.category)?.color,
-        }}
-      >
-        {fact.category}
-      </span>
-      <div className="vote-buttons">
-        <button onClick={() => handleVote('votesInteresting')} disabled={isUpdating}>
-          👍 {fact.votesInteresting}
-        </button>
-        <button onClick={() => handleVote('votesMindblowing')} disabled={isUpdating}>
-          🤯 {fact.votesMindblowing}
-        </button>
-        <button onClick={() => handleVote('votesFalse')} disabled={isUpdating}>
-          ⛔ {fact.votesFalse}
-        </button>
+    <li className="fact-card">
+      <div className="fact-content">
+        <p className="fact-text">
+          {isDisputed && <span className="disputed-badge">[DISPUTED]</span>}
+          {fact.text}
+          <a className="source" href={fact.source} target="_blank" rel="noreferrer">
+            (Source)
+          </a>
+        </p>
+        <span className="tag" style={{ backgroundColor: CATEGORIES.find((cat) => cat.name === fact.category)?.color }}>
+          {fact.category}
+        </span>
+      </div>
+      <div className="fact-actions">
+        <div className="vote-buttons">
+          <button onClick={() => handleVote('votesInteresting')} disabled={isUpdating}>
+            👍 <span>{fact.votesInteresting}</span>
+          </button>
+          <button onClick={() => handleVote('votesMindblowing')} disabled={isUpdating}>
+            😲 <span>{fact.votesMindblowing}</span>
+          </button>
+          <button onClick={() => handleVote('votesFalse')} disabled={isUpdating}>
+            ❌ <span>{fact.votesFalse}</span>
+          </button>
+          <button onClick={() => handleUpdate(fact)} disabled={isUpdating}>
+            ✏️ Edit
+          </button>
+          <button onClick={() => handleDelete(fact.id)} disabled={isUpdating}>
+            🗑️ Delete
+          </button>
+        </div>
       </div>
     </li>
   );
